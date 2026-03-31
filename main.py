@@ -6,22 +6,17 @@ app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Vasbyt bot is aan die loop!"
+    return "Bot werk reg!"
 
-@app.route("/webhook", methods=["GET", "POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    if request.method == "GET":
-        return "Webhook is live", 200
-
-    incoming_msg = request.values.get("Body", "").strip()
-    print("WEBHOOK HIT")
-    print("Message:", incoming_msg)
-    print("From:", request.values.get("From", ""))
-
+    incoming_msg = request.values.get("Body", "")
     resp = MessagingResponse()
-    msg = resp.message("Hallo 👋 Ek werk nou.")
+    msg = resp.message()
 
-    return str(resp), 200, {"Content-Type": "application/xml"}
+    msg.body("Ek werk nou 👌")
+
+    return str(resp)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
