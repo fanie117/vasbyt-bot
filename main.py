@@ -7,84 +7,139 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# --- Google Sheets Setup ---
-creds_json = os.environ.get("GOOGLE_CREDS_JSON")
-creds_dict = json.loads(creds_json)
-
-gc = gspread.service_account_from_dict(creds_dict)
-sheet = gc.open(os.environ.get("GOOGLE_SHEET_NAME")).sheet1
-
-# --- In-memory session storage ---
 sessions = {}
 
-questions = [
+QUESTIONS = [
     "Wat is jou naam?",
     "Wat is jou van?",
     "Wat is jou WhatsApp nommer?",
-    "Alternatiewe nommer?",
-    "Email adres?",
+    "Alternatiewe nommer? Tik 'nee' as jy nie een het nie.",
+    "Wat is jou e-pos adres? Tik 'nee' as jy nie een het nie.",
     "In watter dorp bly jy?",
     "Wat is jou adres?",
-    "Stem jy in om boodskappe te ontvang? (Ja/Nee)"
+    "Stem jy in om boodskappe te ontvang? Antwoord met Ja of Nee."
 ]
+
+def get_sheet():
+    creds_json = os.environ.get("GOOGLE_CREDS_JSON")
+    sheet_name = os.environ.get("GOOGLE_SHEET_NAME")
+
+    if not creds_json:
+        raise Exception("GOOGLE_CREDS_JSON ontbreek.")
+    if not sheet_name:
+        raise Exception("GOOGLE_SHEET_NAME ontbreek.")
+
+    creds_dict = json.loads(creds_json)
+    gc = gspread.service_account_from_dict(creds_dict)
+    return gc.open(sheet_name).sheet1
+
+def save_to_google_sheet(data):
+    sheet = get_sheet()
+    row = [
+        data.get("name", ""),
+        data.get("surname", ""),
+        data.get("whatsapp_number", ""),
+        data.get("alternative_number", ""),
+        data.get("email", ""),
+        data.get("town", ""),
+        data.get("address", ""),
+        data.get("opt_in_status", ""),
+        data.get("last_message", ""),
+        data.get("last_message_date", "")
+    ]
+    sheet.append_row(row)
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Vasbyt bot is aan die loop!"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
-    from_number = request.values.get("From")
+    from_number = request.values.get("From", "").replace("whatsapp:", "")
+    incoming_lower = incoming_msg.lower()
+
+    print("Incoming WhatsApp message:", incoming_msg)
+    print("From:", from_number)
 
     resp = MessagingResponse()
     msg = resp.message()
 
-    # New user
     if from_number not in sessions:
         sessions[from_number] = {
             "step": 0,
-            "data": []
+            "name": "",
+            "surname": "",
+            "whatsapp_number": from_number,
+            "alternative_number": "",
+            "email": "",
+            "town": "",
+            "address": "",
+            "opt_in_status": "",
+            "last_message": incoming_msg,
+            "last_message_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        msg.body("Hallo 👋 Kom ons begin. " + questions[0])
-        return str(resp)
+        msg.body("Hallo 👋 Kom ons begin. " + QUESTIONS[0])
+        return str(resp), 200, {"Content-Type": "application/xml"}
 
     session = sessions[from_number]
+    step = session["step"]
 
-    # Save answer
-    session["data"].append(incoming_msg)
-    session["step"] += 1
+    if step == 0:
+        session["name"] = incoming_msg
+        session["step"] = 1
+        msg.body(QUESTIONS[1])
 
-    # Ask next question
-    if session["step"] < len(questions):
-        msg.body(questions[session["step"]])
-    else:
-        # Save to Google Sheets
-        data = session["data"]
+    elif step == 1:
+        session["surname"] = incoming_msg
+        session["step"] = 2
+        msg.body(QUESTIONS[2])
 
-        row = [
-            data[0],  # Name
-            data[1],  # Surname
-            data[2],  # WhatsApp Number
-            data[3],  # Alternative Number
-            data[4],  # Email
-            data[5],  # Town
-            data[6],  # Address
-            data[7],  # OptInStatus
-            incoming_msg,  # Last Message
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Date
-        ]
+    elif step == 2:
+        session["whatsapp_number"] = incoming_msg
+        session["step"] = 3
+        msg.body(QUESTIONS[3])
 
-        sheet.append_row(row)
+    elif step == 3:
+        session["alternative_number"] = "" if incoming_lower == "nee" else incoming_msg
+        session["step"] = 4
+        msg.body(QUESTIONS[4])
 
-        msg.body("Dankie 🙌 Jou besonderhede is gestoor!")
+    elif step == 4:
+        session["email"] = "" if incoming_lower == "nee" else incoming_msg
+        session["step"] = 5
+        msg.body(QUESTIONS[5])
 
-        # Reset session
+    elif step == 5:
+        session["town"] = incoming_msg
+        session["step"] = 6
+        msg.body(QUESTIONS[6])
+
+    elif step == 6:
+        session["address"] = incoming_msg
+        session["step"] = 7
+        msg.body(QUESTIONS[7])
+
+    elif step == 7:
+        session["opt_in_status"] = "Yes" if incoming_lower in ["ja", "yes", "y"] else "No"
+        session["last_message"] = incoming_msg
+        session["last_message_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            save_to_google_sheet(session)
+            msg.body("Dankie 🙌 Jou besonderhede is gestoor.")
+        except Exception as e:
+            print("Google Sheets error:", str(e))
+            msg.body("Dankie. Jou boodskap is ontvang, maar Google Sheets is nog nie reg opgestel nie.")
+
         del sessions[from_number]
 
-    return str(resp)
+    else:
+        sessions.pop(from_number, None)
+        msg.body("Kom ons begin weer. " + QUESTIONS[0])
 
-@app.route("/")
-def home():
-    return "Vasbyt bot is aan die loop!"
+    return str(resp), 200, {"Content-Type": "application/xml"}
 
-# --- IMPORTANT FOR RAILWAY ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
